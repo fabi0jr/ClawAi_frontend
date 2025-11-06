@@ -30,11 +30,16 @@ import {
   getRecentSessions,
   createSession,
   uploadTrainingFile,
+  getPublicUrl,
 } from '@/lib/api';
-import { type TrainingSession } from '@/types/api';
+import { type TrainingSession, type TrainingImage } from '@/types/api';
 import ImageAnnotator from '@/components/ImageAnnotator';
 
 type TrainingStep = 'upload' | 'annotate' | 'parameters';
+
+type UploadedFileState = TrainingImage & {
+  status?: 'processing' | 'uploaded' | 'error';
+};
 
 // Função para calcular "time ago" (copiada da lógica do mock)
 function formatTimeAgo(dateString: string) {
@@ -55,16 +60,16 @@ function formatTimeAgo(dateString: string) {
 
 export default function Training() {
   const [currentStep, setCurrentStep] = useState<TrainingStep>('upload');
-  const [uploadedFiles, setUploadedFiles] = useState<
-    Array<{ name: string; status: 'uploaded' | 'processing' | 'error' }>
-  >([]);
-  const [selectedImage, setSelectedImage] = useState<string>(
-    'https://images.unsplash.com/photo-1581091226825-a6a2a5aee158?w=800&h=600&fit=crop',
-  );
-  
-  // Para acionar o input de arquivo escondido
+
+  // Armazena os objetos TrainingImage completos retornados pela API
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFileState[]>([]);
+
+  // Controla qual imagem estamos anotando
+  const [currentImageIndex, setCurrentImageIndex] = useState(0);
+
+  // Referência para o input de arquivo escondido
   const fileInputRef = useRef<HTMLInputElement>(null);
-  
+
   const queryClient = useQueryClient();
 
   // --- HOOKS DA API ---
@@ -76,6 +81,7 @@ export default function Training() {
   } = useQuery<TrainingSession[]>({
     queryKey: ['trainingSessions'],
     queryFn: getRecentSessions,
+    refetchInterval: 5000, // Atualiza a lista de sessões a cada 5s
   });
 
   // 2. Mutação para criar uma nova sessão
@@ -86,31 +92,32 @@ export default function Training() {
   // 3. Mutação para fazer upload do arquivo
   const uploadFileMutation = useMutation({
     mutationFn: uploadTrainingFile,
-    onSuccess: (data) => {
-      // Sucesso! Atualiza o status do arquivo
+    onSuccess: (data: TrainingImage) => {
       setUploadedFiles((files) =>
         files.map((f) =>
-          f.name === data.filename ? { ...f, status: 'uploaded' } : f,
+          f.filename === data.filename ? { ...data, status: 'uploaded' } : f, // Adiciona o status: 'uploaded'
         ),
       );
-      // Invalida a query da sidebar para mostrar a nova sessão
       queryClient.invalidateQueries({ queryKey: ['trainingSessions'] });
     },
     onError: (error, variables) => {
-      // Erro! Atualiza o status do arquivo
+      // Erro! Remove o placeholder
       console.error('Erro no upload:', error);
       setUploadedFiles((files) =>
-        files.map((f) =>
-          f.name === variables.file.name ? { ...f, status: 'error' } : f,
-        ),
+        files.filter((f) => f.filename !== variables.file.name),
       );
+      // TODO: Mostrar um toast de erro para o usuário
     },
   });
 
   // --- HANDLERS DE EVENTOS ---
 
   // Aciona o input de arquivo
-  const handleBrowseClick = () => {
+  const handleBrowseClick = (
+    e?: React.MouseEvent<HTMLDivElement | HTMLButtonElement>,
+  ) => {
+    // Para o bug do clique duplo que você achou
+    e?.stopPropagation();
     fileInputRef.current?.click();
   };
 
@@ -121,29 +128,34 @@ export default function Training() {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    // 1. Adiciona o arquivo à UI com status "processing"
-    setUploadedFiles((files) => [
-      ...files,
-      { name: file.name, status: 'processing' },
-    ]);
-
     try {
-      // 2. Cria uma nova sessão de treinamento com o nome do arquivo
+      // 1. Cria uma nova sessão de treinamento
       const newSession = await createSessionMutation.mutateAsync({
-        name: file.name.split('.')[0], // Usa o nome do arquivo (sem extensão)
+        name: file.name.split('.')[0].replace(/[-_]/g, ' '),
       });
 
-      // 3. Faz o upload do arquivo para a sessão recém-criada
+      // 2. Adiciona um "placeholder" à UI (note os campos temporários)
+      setUploadedFiles((files) => [
+        ...files,
+        {
+          id: 'temp-' + file.name,
+          filename: file.name,
+          storagePath: '',
+          status: 'processing',
+          session: newSession,
+        } as UploadedFileState,
+      ]);
+
+      // 3. Faz o upload do arquivo
       uploadFileMutation.mutate({ file, sessionId: newSession.id });
 
-      // Limpa o input para poder enviar o mesmo arquivo novamente
+      // Limpa o input
       event.target.value = '';
     } catch (error) {
       console.error('Erro ao criar sessão:', error);
+      // Remove o placeholder se a criação da sessão falhar
       setUploadedFiles((files) =>
-        files.map((f) =>
-          f.name === file.name ? { ...f, status: 'error' } : f,
-        ),
+        files.filter((f) => f.filename !== file.name),
       );
     }
   };
@@ -162,7 +174,7 @@ export default function Training() {
     if (!recentSessions || recentSessions.length === 0) {
       return (
         <p className="text-xs text-gray-500 text-center">
-          Nenhuma sessão de treinamento encontrada.
+          Nenhuma sessão de treinamento.
         </p>
       );
     }
@@ -187,9 +199,6 @@ export default function Training() {
       </div>
     ));
   };
-  
-  // O resto do seu JSX permanece o mesmo,
-  // mas agora usamos a lógica de renderização acima.
 
   const steps = [
     { id: 'upload', label: 'Data Upload', icon: CheckCircle2 },
@@ -200,6 +209,9 @@ export default function Training() {
     },
     { id: 'parameters', label: 'Training Parameters', icon: Circle },
   ];
+
+  // Pega a imagem atual para o anotador
+  const currentImage = uploadedFiles[currentImageIndex];
 
   return (
     <div className="min-h-screen bg-[#0a0b14] text-white p-6">
@@ -281,22 +293,19 @@ export default function Training() {
                   <h2 className="text-xl font-semibold mb-4">
                     Training Data Upload
                   </h2>
-                  
+
                   {/* Input de arquivo escondido */}
                   <input
                     type="file"
                     ref={fileInputRef}
                     onChange={handleFileChange}
                     className="hidden"
-                    accept="image/jpeg,image/png,application/zip" // Aceita zip e imagens
+                    accept="image/jpeg,image/png,application/zip"
                   />
 
                   <div
                     className="border-2 border-dashed border-gray-700 rounded-lg p-12 text-center hover:border-blue-500 transition-colors cursor-pointer"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleBrowseClick();
-                    }}
+                    onClick={handleBrowseClick}
                   >
                     <Upload className="w-12 h-12 mx-auto mb-4 text-gray-500" />
                     <p className="text-lg mb-2">
@@ -308,7 +317,7 @@ export default function Training() {
                     <Button
                       className="bg-blue-600 hover:bg-blue-700"
                       onClick={(e) => {
-                        e.stopPropagation();
+                        e.stopPropagation(); // Correção do bug de clique duplo
                         handleBrowseClick();
                       }}
                     >
@@ -322,7 +331,7 @@ export default function Training() {
                         key={index}
                         className="flex items-center justify-between p-3 bg-gray-800 rounded-lg"
                       >
-                        <span className="text-sm">{file.name}</span>
+                        <span className="text-sm">{file.filename}</span>
                         <div className="flex items-center gap-2">
                           {file.status === 'uploaded' && (
                             <span className="text-xs text-green-400 font-medium">
@@ -349,10 +358,14 @@ export default function Training() {
                 </Card>
 
                 <div className="flex justify-end">
-                  <Button
+                <Button
                     className="bg-blue-600 hover:bg-blue-700"
                     onClick={() => setCurrentStep('annotate')}
-                    disabled={uploadedFiles.length === 0} // Desabilita se nada foi enviado
+                    disabled={
+                      uploadedFiles.length === 0 || // Desabilita se não houver arquivos
+                      uploadFileMutation.isPending || // Desabilita se um upload estiver em andamento
+                      uploadedFiles.some(f => f.status === 'processing') // Garante que todos os uploads terminaram
+                    }
                   >
                     Next: Label Annotation
                   </Button>
@@ -371,10 +384,23 @@ export default function Training() {
                         training images
                       </p>
                     </div>
-                    <div className="text-sm text-gray-400">Image 1 of 24</div>
+                    <div className="text-sm text-gray-400">
+                      Image {currentImageIndex + 1} of {uploadedFiles.length}
+                    </div>
                   </div>
 
-                  <ImageAnnotator imageUrl={selectedImage} />
+                  {/* Passa o ID da imagem e a URL completa para o anotador */}
+                  {currentImage ? (
+                    <ImageAnnotator
+                      key={currentImage.id} // Chave React para forçar remount ao mudar de imagem
+                      imageId={currentImage.id}
+                      imageUrl={getPublicUrl(currentImage.storagePath)}
+                    />
+                  ) : (
+                    <div className="text-center p-10 text-gray-500">
+                      <p>No image selected for annotation.</p>
+                    </div>
+                  )}
                 </Card>
 
                 <div className="flex justify-between">
@@ -385,6 +411,9 @@ export default function Training() {
                   >
                     Back
                   </Button>
+                  
+                  {/* TODO: Adicionar botões de < Anterior e Próxima Imagem > aqui */}
+
                   <Button
                     className="bg-blue-600 hover:bg-blue-700"
                     onClick={() => setCurrentStep('parameters')}
@@ -394,53 +423,69 @@ export default function Training() {
                 </div>
               </div>
             )}
-            
+
             {currentStep === 'parameters' && (
-               // ... (O resto do seu componente permanece igual)
-               <div className="space-y-6">
+              // O passo 3 permanece o mesmo por enquanto
+              <div className="space-y-6">
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                   <Card className="bg-gray-900 border-gray-800 p-6">
-                    <h2 className="text-xl font-semibold mb-4">Training Parameters</h2>
-                    
+                    <h2 className="text-xl font-semibold mb-4">
+                      Training Parameters
+                    </h2>
+
                     <div className="space-y-4">
                       <div>
-                        <Label className="text-sm text-gray-400">Model Type</Label>
+                        <Label className="text-sm text-gray-400">
+                          Model Type
+                        </Label>
                         <Select defaultValue="object-detection">
                           <SelectTrigger className="mt-1 bg-gray-950 border-gray-700">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="object-detection">Object Detection</SelectItem>
-                            <SelectItem value="classification">Classification</SelectItem>
-                            <SelectItem value="segmentation">Segmentation</SelectItem>
+                            <SelectItem value="object-detection">
+                              Object Detection
+                            </SelectItem>
+                            <SelectItem value="classification">
+                              Classification
+                            </SelectItem>
+                            <SelectItem value="segmentation">
+                              Segmentation
+                            </SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
 
                       <div>
-                        <Label className="text-sm text-gray-400">Training Epochs</Label>
-                        <Input 
-                          type="number" 
-                          defaultValue="100" 
+                        <Label className="text-sm text-gray-400">
+                          Training Epochs
+                        </Label>
+                        <Input
+                          type="number"
+                          defaultValue="100"
                           className="mt-1 bg-gray-950 border-gray-700"
                         />
                       </div>
 
                       <div>
-                        <Label className="text-sm text-gray-400">Learning Rate</Label>
-                        <Input 
-                          type="number" 
+                        <Label className="text-sm text-gray-400">
+                          Learning Rate
+                        </Label>
+                        <Input
+                          type="number"
                           step="0.001"
-                          defaultValue="0.001" 
+                          defaultValue="0.001"
                           className="mt-1 bg-gray-950 border-gray-700"
                         />
                       </div>
 
                       <div>
-                        <Label className="text-sm text-gray-400">Batch Size</Label>
-                        <Input 
-                          type="number" 
-                          defaultValue="32" 
+                        <Label className="text-sm text-gray-400">
+                          Batch Size
+                        </Label>
+                        <Input
+                          type="number"
+                          defaultValue="32"
                           className="mt-1 bg-gray-950 border-gray-700"
                         />
                       </div>
@@ -448,33 +493,43 @@ export default function Training() {
                   </Card>
 
                   <Card className="bg-gray-900 border-gray-800 p-6">
-                    <h2 className="text-xl font-semibold mb-4">Item Registration</h2>
-                    
+                    <h2 className="text-xl font-semibold mb-4">
+                      Item Registration
+                    </h2>
+
                     <div className="space-y-4">
                       <div>
-                        <Label className="text-sm text-gray-400">Item Name</Label>
-                        <Input 
-                          placeholder="Enter item name" 
+                        <Label className="text-sm text-gray-400">
+                          Item Name
+                        </Label>
+                        <Input
+                          placeholder="Enter item name"
                           className="mt-1 bg-gray-950 border-gray-700"
                         />
                       </div>
 
                       <div>
-                        <Label className="text-sm text-gray-400">Description</Label>
-                        <Textarea 
-                          placeholder="Describe the item characteristics" 
+                        <Label className="text-sm text-gray-400">
+                          Description
+                        </Label>
+                        <Textarea
+                          placeholder="Describe the item characteristics"
                           className="mt-1 bg-gray-950 border-gray-700 min-h-[100px]"
                         />
                       </div>
 
                       <div>
-                        <Label className="text-sm text-gray-400">Category</Label>
+                        <Label className="text-sm text-gray-400">
+                          Category
+                        </Label>
                         <Select defaultValue="safety">
                           <SelectTrigger className="mt-1 bg-gray-950 border-gray-700">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="safety">Safety Equipment</SelectItem>
+                            <SelectItem value="safety">
+                              Safety Equipment
+                            </SelectItem>
                             <SelectItem value="parts">Parts</SelectItem>
                             <SelectItem value="defects">Defects</SelectItem>
                           </SelectContent>
@@ -482,7 +537,9 @@ export default function Training() {
                       </div>
 
                       <div>
-                        <Label className="text-sm text-gray-400">Priority Level</Label>
+                        <Label className="text-sm text-gray-400">
+                          Priority Level
+                        </Label>
                         <Select defaultValue="high">
                           <SelectTrigger className="mt-1 bg-gray-950 border-gray-700">
                             <SelectValue />
@@ -496,12 +553,14 @@ export default function Training() {
                       </div>
 
                       <div>
-                        <Label className="text-sm text-gray-400 mb-2 block">Detection Threshold</Label>
+                        <Label className="text-sm text-gray-400 mb-2 block">
+                          Detection Threshold
+                        </Label>
                         <div className="flex items-center gap-4">
-                          <input 
-                            type="range" 
-                            min="0" 
-                            max="100" 
+                          <input
+                            type="range"
+                            min="0"
+                            max="100"
                             defaultValue="85"
                             className="flex-1"
                           />
@@ -517,7 +576,7 @@ export default function Training() {
                 </div>
 
                 <div className="flex justify-between">
-                  <Button 
+                  <Button
                     variant="outline"
                     className="border-gray-700 text-gray-300 hover:bg-gray-800"
                     onClick={() => setCurrentStep('annotate')}
@@ -525,11 +584,17 @@ export default function Training() {
                     Back
                   </Button>
                   <div className="flex gap-3">
-                    <Button variant="outline" className="border-gray-700 text-gray-300 hover:bg-gray-800">
+                    <Button
+                      variant="outline"
+                      className="border-gray-700 text-gray-300 hover:bg-gray-800"
+                    >
                       <X className="w-4 h-4 mr-2" />
                       Cancel
                     </Button>
-                    <Button variant="outline" className="border-gray-700 text-gray-300 hover:bg-gray-800">
+                    <Button
+                      variant="outline"
+                      className="border-gray-700 text-gray-300 hover:bg-gray-800"
+                    >
                       Save Draft
                     </Button>
                     <Button className="bg-blue-600 hover:bg-blue-700">
@@ -540,9 +605,13 @@ export default function Training() {
                 </div>
 
                 <div className="flex items-center justify-center gap-2 text-sm text-gray-500">
-                  <Button variant="ghost" size="sm">‹</Button>
+                  <Button variant="ghost" size="sm">
+                    ‹
+                  </Button>
                   <span>3 / 3</span>
-                  <Button variant="ghost" size="sm">›</Button>
+                  <Button variant="ghost" size="sm">
+                    ›
+                  </Button>
                 </div>
               </div>
             )}

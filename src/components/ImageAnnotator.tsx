@@ -3,110 +3,174 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
-import { Trash2, Plus } from 'lucide-react';
+import { Trash2, Loader2, AlertCircle } from 'lucide-react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { getAnnotations, saveAnnotations } from '@/lib/api';
+import { type Annotation } from '@/types/api';
+import { Skeleton } from './ui/skeleton';
 
-interface BoundingBox {
+// A interface BoundingBox é o nosso "estado interno"
+// que será derivado da API.
+interface BoundingBox extends Omit<Annotation, 'id'> {
+  // O 'id' pode ser o UUID do banco ou um ID temporário (timestamp)
   id: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  label: string;
 }
 
 interface ImageAnnotatorProps {
   imageUrl: string;
-  onAnnotationsChange?: (annotations: BoundingBox[]) => void;
+  imageId: string; // ID da imagem no banco de dados
 }
 
-export default function ImageAnnotator({ imageUrl, onAnnotationsChange }: ImageAnnotatorProps) {
+export default function ImageAnnotator({
+  imageUrl,
+  imageId,
+}: ImageAnnotatorProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [annotations, setAnnotations] = useState<BoundingBox[]>([]);
   const [isDrawing, setIsDrawing] = useState(false);
   const [startPos, setStartPos] = useState({ x: 0, y: 0 });
-  const [currentBox, setCurrentBox] = useState<BoundingBox | null>(null);
-  const [newLabel, setNewLabel] = useState('');
+  const [currentBox, setCurrentBox] = useState<Omit<BoundingBox, 'id'> | null>(
+    null,
+  );
   const [imageLoaded, setImageLoaded] = useState(false);
 
+  // --- MUDANÇA 1: Armazenar o objeto Image no Ref ---
+  // Inicializamos o objeto Image aqui e o mantemos
+  const imageRef = useRef(new Image());
+  
+  const queryClient = useQueryClient();
+
+  // --- HOOKS DA API ---
+
+  // 1. Query para BUSCAR as anotações desta imagem
+  const {
+    data: fetchedAnnotations,
+    isLoading: isLoadingAnnotations,
+    error,
+  } = useQuery<Annotation[]>({
+    queryKey: ['annotations', imageId], // Chave única por imagem
+    queryFn: () => getAnnotations(imageId),
+    refetchOnWindowFocus: false, // Evita re-buscar desnecessariamente
+  });
+
+  // 2. Mutação para SALVAR as anotações
+  const saveMutation = useMutation({
+    mutationFn: (annotationsToSave: Omit<Annotation, 'id'>[]) =>
+      saveAnnotations({ imageId, annotations: annotationsToSave }),
+    onSuccess: (savedAnnotations) => {
+      // Quando salvar, atualiza o cache do react-query com os dados do servidor
+      // Isso atualiza os IDs temporários (timestamps) pelos IDs reais (uuid)
+      queryClient.setQueryData(['annotations', imageId], savedAnnotations);
+    },
+    onError: (err) => {
+      console.error('Erro ao salvar anotações:', err);
+      // TODO: Mostrar um toast de erro
+    },
+  });
+
+  // --- EFEITOS ---
+
+  // --- MUDANÇA 2: Efeito de carregamento de imagem mais robusto ---
+  // Efeito para carregar a imagem no canvas
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || !imageUrl) return;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    
+    // Pega o objeto Image do ref
+    const img = imageRef.current;
+    img.crossOrigin = 'anonymous'; // Permite carregar imagens de outra porta (localhost:3001)
 
-    const img = new Image();
-    img.src = imageUrl;
+    // Define os handlers ANTES de definir o .src
     img.onload = () => {
       canvas.width = img.width;
       canvas.height = img.height;
-      setImageLoaded(true);
-      redrawCanvas(ctx, img);
+      setImageLoaded(true); // Dispara o redraw
     };
-  }, [imageUrl]);
+    img.onerror = () => {
+      console.error('Erro ao carregar a imagem:', imageUrl);
+      setImageLoaded(false);
+    };
 
+    // Define o .src para iniciar o carregamento
+    img.src = imageUrl;
+    
+  }, [imageUrl]); // Este efeito só re-executa se a imageUrl mudar
+
+  // Efeito para popular o estado interno quando a API retornar os dados
+  useEffect(() => {
+    if (fetchedAnnotations) {
+      setAnnotations(fetchedAnnotations.map((ann) => ({ ...ann })));
+    }
+  }, [fetchedAnnotations]);
+
+  // Efeito para redesenhar o canvas quando o estado mudar
   useEffect(() => {
     if (imageLoaded) {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      const img = new Image();
-      img.src = imageUrl;
-      img.onload = () => redrawCanvas(ctx, img);
+      redrawCanvas();
     }
-  }, [annotations, currentBox, imageLoaded, imageUrl]);
+  }, [annotations, currentBox, imageLoaded]); // Redesenha se a imagem carregar OU anotações mudarem
 
-  const redrawCanvas = (ctx: CanvasRenderingContext2D, img: HTMLImageElement) => {
+  // --- LÓGICA DE DESENHO ---
+
+  const redrawCanvas = () => {
+    const canvas = canvasRef.current;
+    const img = imageRef.current; // Pega a imagem do ref
+    if (!canvas || !img) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-    ctx.drawImage(img, 0, 0);
+    ctx.drawImage(img, 0, 0); // Usa a imagem do ref
 
-    // Draw existing annotations
+    // Desenha anotações salvas
     annotations.forEach((box) => {
       drawBox(ctx, box, '#3b82f6');
     });
 
-    // Draw current box being drawn
+    // Desenha anotação atual
     if (currentBox) {
-      drawBox(ctx, currentBox, '#22c55e');
+      drawBox(ctx, { ...currentBox, id: 'current' }, '#22c55e');
     }
   };
 
-  const drawBox = (ctx: CanvasRenderingContext2D, box: BoundingBox, color: string) => {
+  const drawBox = (
+    ctx: CanvasRenderingContext2D,
+    box: BoundingBox | (Omit<BoundingBox, 'id'> & { id: 'current' }),
+    color: string,
+  ) => {
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.strokeRect(box.x, box.y, box.width, box.height);
 
-    // Draw label background
     ctx.fillStyle = color;
     const labelText = box.label || 'Unlabeled';
     ctx.font = '14px Arial';
     const textWidth = ctx.measureText(labelText).width;
     ctx.fillRect(box.x, box.y - 20, textWidth + 10, 20);
 
-    // Draw label text
     ctx.fillStyle = 'white';
     ctx.fillText(labelText, box.x + 5, box.y - 5);
   };
 
+  // --- HANDLERS DE EVENTOS (Corrigidos para enviar dados limpos) ---
+
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-
     setIsDrawing(true);
     setStartPos({ x, y });
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!isDrawing) return;
-
     const canvas = canvasRef.current;
     if (!canvas) return;
-
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
@@ -115,47 +179,80 @@ export default function ImageAnnotator({ imageUrl, onAnnotationsChange }: ImageA
     const height = y - startPos.y;
 
     setCurrentBox({
-      id: Date.now().toString(),
       x: startPos.x,
       y: startPos.y,
       width,
       height,
-      label: ''
+      label: '',
     });
   };
 
   const handleMouseUp = () => {
     if (currentBox && Math.abs(currentBox.width) > 10 && Math.abs(currentBox.height) > 10) {
-      const normalizedBox = {
-        ...currentBox,
+      const normalizedBox: BoundingBox = {
+        id: Date.now().toString(), // ID temporário
         x: currentBox.width < 0 ? currentBox.x + currentBox.width : currentBox.x,
         y: currentBox.height < 0 ? currentBox.y + currentBox.height : currentBox.y,
         width: Math.abs(currentBox.width),
-        height: Math.abs(currentBox.height)
+        height: Math.abs(currentBox.height),
+        label: '',
       };
-      
+
       const newAnnotations = [...annotations, normalizedBox];
       setAnnotations(newAnnotations);
-      onAnnotationsChange?.(newAnnotations);
+      
+      // Mapeia o array para remover o campo 'id' antes de enviar
+      const annotationsToSave = newAnnotations.map(({ id, ...rest }) => rest);
+      saveMutation.mutate(annotationsToSave); // Salva na API
     }
-
     setIsDrawing(false);
     setCurrentBox(null);
   };
 
   const updateLabel = (id: string, label: string) => {
     const newAnnotations = annotations.map((box) =>
-      box.id === id ? { ...box, label } : box
+      box.id === id ? { ...box, label } : box,
     );
     setAnnotations(newAnnotations);
-    onAnnotationsChange?.(newAnnotations);
+    
+    // Mapeia o array para remover o campo 'id' antes de enviar
+    const annotationsToSave = newAnnotations.map(({ id, ...rest }) => rest);
+    saveMutation.mutate(annotationsToSave); // Salva na API
   };
 
   const deleteAnnotation = (id: string) => {
     const newAnnotations = annotations.filter((box) => box.id !== id);
     setAnnotations(newAnnotations);
-    onAnnotationsChange?.(newAnnotations);
+    
+    // Mapeia o array para remover o campo 'id' antes de enviar
+    const annotationsToSave = newAnnotations.map(({ id, ...rest }) => rest);
+    saveMutation.mutate(annotationsToSave); // Salva na API
   };
+  
+  // --- RENDERIZAÇÃO ---
+
+  if (isLoadingAnnotations) {
+    return (
+       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2">
+           <Skeleton className="w-full h-[600px] bg-gray-800" />
+        </div>
+        <div className="lg:col-span-1">
+           <Skeleton className="w-full h-[600px] bg-gray-800" />
+        </div>
+      </div>
+    )
+  }
+  
+  if (error) {
+     return (
+      <div className="flex flex-col items-center justify-center p-10 bg-gray-900 border-gray-800 rounded-lg">
+        <AlertCircle className="w-12 h-12 text-red-500 mb-4" />
+        <h3 className="text-xl font-semibold text-white mb-2">Error Loading Annotations</h3>
+        <p className="text-sm text-gray-400">Could not load data for this image. Please try again.</p>
+      </div>
+    )
+  }
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -163,15 +260,22 @@ export default function ImageAnnotator({ imageUrl, onAnnotationsChange }: ImageA
         <Card className="p-4 bg-gray-900 border-gray-800">
           <div className="mb-4">
             <h3 className="text-lg font-semibold text-white mb-2">Image Canvas</h3>
-            <p className="text-sm text-gray-400">Click and drag to draw bounding boxes around objects</p>
+            <p className="text-sm text-gray-400">
+              Click and drag to draw bounding boxes.
+            </p>
           </div>
           <div className="overflow-auto max-h-[600px] bg-gray-950 rounded-lg">
+            {!imageLoaded && (
+               <div className="w-full h-[600px] flex items-center justify-center">
+                 <Loader2 className="w-8 h-8 animate-spin" />
+               </div>
+            )}
             <canvas
               ref={canvasRef}
               onMouseDown={handleMouseDown}
               onMouseMove={handleMouseMove}
               onMouseUp={handleMouseUp}
-              className="cursor-crosshair"
+              className={`cursor-crosshair ${imageLoaded ? 'block' : 'hidden'}`}
             />
           </div>
         </Card>
@@ -179,8 +283,13 @@ export default function ImageAnnotator({ imageUrl, onAnnotationsChange }: ImageA
 
       <div className="lg:col-span-1">
         <Card className="p-4 bg-gray-900 border-gray-800">
-          <h3 className="text-lg font-semibold text-white mb-4">Annotations ({annotations.length})</h3>
-          
+          <h3 className="text-lg font-semibold text-white mb-4">
+            Annotations ({annotations.length})
+            {saveMutation.isPending && (
+              <Loader2 className="w-4 h-4 ml-2 inline animate-spin" />
+            )}
+          </h3>
+
           <div className="space-y-3 max-h-[600px] overflow-y-auto">
             {annotations.length === 0 ? (
               <div className="text-center py-8 text-gray-500">
@@ -189,9 +298,14 @@ export default function ImageAnnotator({ imageUrl, onAnnotationsChange }: ImageA
               </div>
             ) : (
               annotations.map((box, index) => (
-                <div key={box.id} className="p-3 bg-gray-800 rounded-lg border border-gray-700">
+                <div
+                  key={box.id} // Agora usa o ID do DB ou o ID temporário
+                  className="p-3 bg-gray-800 rounded-lg border border-gray-700"
+                >
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium text-gray-300">Box {index + 1}</span>
+                    <span className="text-sm font-medium text-gray-300">
+                      {box.label || `Box ${index + 1}`}
+                    </span>
                     <Button
                       variant="ghost"
                       size="sm"
@@ -201,7 +315,7 @@ export default function ImageAnnotator({ imageUrl, onAnnotationsChange }: ImageA
                       <Trash2 className="w-4 h-4" />
                     </Button>
                   </div>
-                  
+
                   <div className="space-y-2">
                     <div>
                       <Label className="text-xs text-gray-400">Label</Label>
@@ -212,7 +326,7 @@ export default function ImageAnnotator({ imageUrl, onAnnotationsChange }: ImageA
                         className="mt-1 bg-gray-950 border-gray-700 text-white"
                       />
                     </div>
-                    
+
                     <div className="grid grid-cols-2 gap-2 text-xs text-gray-500">
                       <div>X: {Math.round(box.x)}px</div>
                       <div>Y: {Math.round(box.y)}px</div>

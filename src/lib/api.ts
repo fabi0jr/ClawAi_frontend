@@ -1,10 +1,22 @@
 import axios from 'axios';
-import { type TrainingSession } from '@/types/api'; // Importe o novo tipo
+import {
+  type TrainingSession,
+  type Annotation, // Importe
+} from '@/types/api';
 
-// Define a URL base da sua API NestJS
+const API_URL = 'http://localhost:3001';
+
 export const apiClient = axios.create({
-  baseURL: 'http://localhost:3001', // A porta que definimos no main.ts
+  baseURL: API_URL,
 });
+
+// --- FUNÇÃO HELPER DE URL ---
+/**
+ * Converte um storagePath (ex: "uploads/foo.png") em uma URL pública.
+ */
+export const getPublicUrl = (storagePath: string) => {
+    return `${API_URL}/${storagePath}`;
+  };
 
 // --- NOVAS FUNÇÕES ADICIONADAS ---
 
@@ -43,4 +55,31 @@ export const uploadTrainingFile = async (vars: {
     },
   });
   return data;
+
+};  
+
+  /**
+ * Busca as anotações de uma imagem específica.
+ */
+export const getAnnotations = async (
+imageId: string,
+): Promise<Annotation[]> => {
+const { data } = await apiClient.get(
+    `/training/images/${imageId}/annotations`,
+);
+return data;
 };
+  
+  /**
+   * Salva (sobrescreve) as anotações de uma imagem.
+   */
+export const saveAnnotations = async (vars: {
+    imageId: string;
+    annotations: Omit<Annotation, 'id'>[]; // Envia um array sem o 'id'
+  }) => {
+    const { data } = await apiClient.post(
+      `/training/images/${vars.imageId}/annotations`,
+      vars.annotations, // Envia o array de anotações no body
+    );
+    return data;
+  };

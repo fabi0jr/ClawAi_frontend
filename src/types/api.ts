@@ -32,4 +32,22 @@ export interface Detection {
     status: 'processing' | 'complete' | 'failed';
     createdAt: string; // TypeORM envia como string ISO
     updatedAt: string;
-  }
+   }
+
+
+   export interface Annotation {
+        id: string;
+        label: string;
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+   }
+
+    // Espelha a entidade TrainingImage do backend
+    export interface TrainingImage {
+    id: string;
+    filename: string;
+    storagePath: string; // Ex: "uploads/123-nome.png"
+    session: TrainingSession;
+    }
