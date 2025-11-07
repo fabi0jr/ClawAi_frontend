@@ -1,7 +1,8 @@
 import axios from 'axios';
 import {
   type TrainingSession,
-  type Annotation, // Importe
+  type Annotation,
+  type StartTrainingDto
 } from '@/types/api';
 
 const API_URL = 'http://localhost:3001';
@@ -83,3 +84,17 @@ export const saveAnnotations = async (vars: {
     );
     return data;
   };
+
+/**
+ * Dispara o início do processo de treinamento no backend.
+ */
+export const startTraining = async (vars: {
+  sessionId: string;
+  params: StartTrainingDto;
+}) => {
+  const { data } = await apiClient.post(
+    `/training/sessions/${vars.sessionId}/start`,
+    vars.params, // Envia os parâmetros do formulário no body
+  );
+  return data;
+};

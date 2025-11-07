@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -31,9 +31,11 @@ import {
   createSession,
   uploadTrainingFile,
   getPublicUrl,
+  startTraining,
 } from '@/lib/api';
-import { type TrainingSession, type TrainingImage } from '@/types/api';
+import { type TrainingSession, type TrainingImage, type StartTrainingDto, ModelType, ItemCategory, PriorityLevel } from '@/types/api';
 import ImageAnnotator from '@/components/ImageAnnotator';
+import { toast } from 'sonner'
 
 type TrainingStep = 'upload' | 'annotate' | 'parameters';
 
@@ -60,19 +62,23 @@ function formatTimeAgo(dateString: string) {
 
 export default function Training() {
   const [currentStep, setCurrentStep] = useState<TrainingStep>('upload');
-
-  // Armazena os objetos TrainingImage completos retornados pela API
+  const [isNavigatingNext, setIsNavigatingNext] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileState[]>([]);
-
-  // Controla qual imagem estamos anotando
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
-
-  // Referência para o input de arquivo escondido
   const fileInputRef = useRef<HTMLInputElement>(null);
-
   const queryClient = useQueryClient();
 
-  // --- HOOKS DA API ---
+  const [formState, setFormState] = useState<StartTrainingDto>({
+    modelType: ModelType.OBJECT_DETECTION,
+    epochs: 100,
+    learningRate: 0.001,
+    batchSize: 32,
+    itemName: '',
+    description: '',
+    category: ItemCategory.SAFETY,
+    priority: PriorityLevel.HIGH,
+    detectionThreshold: 85,
+  });
 
   // 1. Busca sessões recentes para a sidebar
   const {
@@ -93,35 +99,62 @@ export default function Training() {
   const uploadFileMutation = useMutation({
     mutationFn: uploadTrainingFile,
     onSuccess: (data: TrainingImage) => {
-      setUploadedFiles((files) =>
-        files.map((f) =>
-          f.filename === data.filename ? { ...data, status: 'uploaded' } : f, // Adiciona o status: 'uploaded'
-        ),
-      );
+
+      setUploadedFiles((currentFiles) => {
+        const indexToUpdate = currentFiles.findIndex(
+          (f) => f.session.id === data.session.id
+        );
+
+        if (indexToUpdate === -1) return currentFiles;
+
+        const newFiles = [...currentFiles];
+        newFiles[indexToUpdate] = {
+          ...data,
+          status: 'uploaded',
+        };
+        return newFiles;
+      });
       queryClient.invalidateQueries({ queryKey: ['trainingSessions'] });
     },
     onError: (error, variables) => {
-      // Erro! Remove o placeholder
-      console.error('Erro no upload:', error);
-      setUploadedFiles((files) =>
-        files.filter((f) => f.filename !== variables.file.name),
-      );
-      // TODO: Mostrar um toast de erro para o usuário
     },
   });
 
-  // --- HANDLERS DE EVENTOS ---
+  const startTrainingMutation = useMutation({
+    mutationFn: startTraining,
+    onSuccess: (data: TrainingSession) => {
+      toast.success(`Treinamento "${data.name}" iniciado com sucesso!`);
+      queryClient.invalidateQueries({ queryKey: ['trainingSessions'] });
+    },
+    onError: (error) => {
+      console.error('Erro ao iniciar treinamento:', error);
+      toast.error('Erro ao iniciar treinamento. Tente novamente.');
+    },
+  });
 
-  // Aciona o input de arquivo
+  useEffect(() => {
+
+    if (!isNavigatingNext || uploadedFiles.length === 0) {
+      return;
+    }
+
+    const allFilesReady = uploadedFiles.every(
+      (f) => f.status === 'uploaded'
+    );
+
+    if (allFilesReady) {
+      setCurrentStep('annotate');
+      setIsNavigatingNext(false);
+    }
+  }, [isNavigatingNext, uploadedFiles]);
+
   const handleBrowseClick = (
     e?: React.MouseEvent<HTMLDivElement | HTMLButtonElement>,
   ) => {
-    // Para o bug do clique duplo que você achou
     e?.stopPropagation();
     fileInputRef.current?.click();
   };
 
-  // Lida com a seleção de arquivo
   const handleFileChange = async (
     event: React.ChangeEvent<HTMLInputElement>,
   ) => {
@@ -129,12 +162,10 @@ export default function Training() {
     if (!file) return;
 
     try {
-      // 1. Cria uma nova sessão de treinamento
       const newSession = await createSessionMutation.mutateAsync({
         name: file.name.split('.')[0].replace(/[-_]/g, ' '),
       });
 
-      // 2. Adiciona um "placeholder" à UI (note os campos temporários)
       setUploadedFiles((files) => [
         ...files,
         {
@@ -146,10 +177,8 @@ export default function Training() {
         } as UploadedFileState,
       ]);
 
-      // 3. Faz o upload do arquivo
       uploadFileMutation.mutate({ file, sessionId: newSession.id });
 
-      // Limpa o input
       event.target.value = '';
     } catch (error) {
       console.error('Erro ao criar sessão:', error);
@@ -198,6 +227,36 @@ export default function Training() {
         <span className="text-gray-500">{formatTimeAgo(session.createdAt)}</span>
       </div>
     ));
+  };
+
+  const handleFormInputChange = (
+    field: keyof StartTrainingDto,
+    value: string | number,
+  ) => {
+    setFormState((prev) => ({
+      ...prev,
+      [field]: value,
+    }));
+  };
+  
+  const handleSubmitTraining = () => {
+    // Pega a sessão do primeiro arquivo (assumindo que todos são da mesma sessão)
+    const sessionId = uploadedFiles[0]?.session?.id;
+    if (!sessionId) {
+      toast.error('Nenhuma sessão de upload encontrada.');
+      return;
+    }
+  
+    // Prepara os dados com os tipos corretos (números)
+    const trainingParams: StartTrainingDto = {
+      ...formState,
+      epochs: Number(formState.epochs),
+      learningRate: Number(formState.learningRate),
+      batchSize: Number(formState.batchSize),
+      detectionThreshold: Number(formState.detectionThreshold),
+    };
+  
+    startTrainingMutation.mutate({ sessionId, params: trainingParams });
   };
 
   const steps = [
@@ -360,13 +419,18 @@ export default function Training() {
                 <div className="flex justify-end">
                 <Button
                     className="bg-blue-600 hover:bg-blue-700"
-                    onClick={() => setCurrentStep('annotate')}
+                    onClick={() => setIsNavigatingNext(true)}
                     disabled={
-                      uploadedFiles.length === 0 || // Desabilita se não houver arquivos
-                      uploadFileMutation.isPending || // Desabilita se um upload estiver em andamento
-                      uploadedFiles.some(f => f.status === 'processing') // Garante que todos os uploads terminaram
+                      uploadedFiles.length === 0 ||
+                      uploadFileMutation.isPending || // Desabilita se estiver ATIVAMENTE fazendo upload
+                      createSessionMutation.isPending || // Desabilita se estiver criando a sessão
+                      isNavigatingNext // Desabilita após o clique, enquanto espera a transição
                     }
                   >
+                    {/* Mostra um spinner se estivermos esperando a transição */}
+                    {(uploadFileMutation.isPending || isNavigatingNext) && (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    )}
                     Next: Label Annotation
                   </Button>
                 </div>
@@ -390,7 +454,7 @@ export default function Training() {
                   </div>
 
                   {/* Passa o ID da imagem e a URL completa para o anotador */}
-                  {currentImage ? (
+                  {currentImage && currentImage.storagePath ? (
                     <ImageAnnotator
                       key={currentImage.id} // Chave React para forçar remount ao mudar de imagem
                       imageId={currentImage.id}
@@ -398,7 +462,8 @@ export default function Training() {
                     />
                   ) : (
                     <div className="text-center p-10 text-gray-500">
-                      <p>No image selected for annotation.</p>
+                       <Loader2 className="w-8 h-8 animate-spin" />
+                       <p className="mt-2">Loading image...</p>
                     </div>
                   )}
                 </Card>
@@ -425,7 +490,6 @@ export default function Training() {
             )}
 
             {currentStep === 'parameters' && (
-              // O passo 3 permanece o mesmo por enquanto
               <div className="space-y-6">
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                   <Card className="bg-gray-900 border-gray-800 p-6">
@@ -435,21 +499,24 @@ export default function Training() {
 
                     <div className="space-y-4">
                       <div>
-                        <Label className="text-sm text-gray-400">
-                          Model Type
-                        </Label>
-                        <Select defaultValue="object-detection">
+                        <Label className="text-sm text-gray-400">Model Type</Label>
+                        <Select
+                          value={formState.modelType}
+                          onValueChange={(value: ModelType) =>
+                            handleFormInputChange('modelType', value)
+                          }
+                        >
                           <SelectTrigger className="mt-1 bg-gray-950 border-gray-700">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="object-detection">
+                            <SelectItem value={ModelType.OBJECT_DETECTION}>
                               Object Detection
                             </SelectItem>
-                            <SelectItem value="classification">
+                            <SelectItem value={ModelType.CLASSIFICATION}>
                               Classification
                             </SelectItem>
-                            <SelectItem value="segmentation">
+                            <SelectItem value={ModelType.SEGMENTATION}>
                               Segmentation
                             </SelectItem>
                           </SelectContent>
@@ -457,35 +524,38 @@ export default function Training() {
                       </div>
 
                       <div>
-                        <Label className="text-sm text-gray-400">
-                          Training Epochs
-                        </Label>
+                        <Label className="text-sm text-gray-400">Training Epochs</Label>
                         <Input
                           type="number"
-                          defaultValue="100"
+                          value={formState.epochs}
+                          onChange={(e) =>
+                            handleFormInputChange('epochs', e.target.value)
+                          }
                           className="mt-1 bg-gray-950 border-gray-700"
                         />
                       </div>
 
                       <div>
-                        <Label className="text-sm text-gray-400">
-                          Learning Rate
-                        </Label>
+                        <Label className="text-sm text-gray-400">Learning Rate</Label>
                         <Input
                           type="number"
                           step="0.001"
-                          defaultValue="0.001"
+                          value={formState.learningRate}
+                          onChange={(e) =>
+                            handleFormInputChange('learningRate', e.target.value)
+                          }
                           className="mt-1 bg-gray-950 border-gray-700"
                         />
                       </div>
 
                       <div>
-                        <Label className="text-sm text-gray-400">
-                          Batch Size
-                        </Label>
+                        <Label className="text-sm text-gray-400">Batch Size</Label>
                         <Input
                           type="number"
-                          defaultValue="32"
+                          value={formState.batchSize}
+                          onChange={(e) =>
+                            handleFormInputChange('batchSize', e.target.value)
+                          }
                           className="mt-1 bg-gray-950 border-gray-700"
                         />
                       </div>
@@ -493,61 +563,69 @@ export default function Training() {
                   </Card>
 
                   <Card className="bg-gray-900 border-gray-800 p-6">
-                    <h2 className="text-xl font-semibold mb-4">
-                      Item Registration
-                    </h2>
+                    <h2 className="text-xl font-semibold mb-4">Item Registration</h2>
 
                     <div className="space-y-4">
                       <div>
-                        <Label className="text-sm text-gray-400">
-                          Item Name
-                        </Label>
+                        <Label className="text-sm text-gray-400">Item Name</Label>
                         <Input
                           placeholder="Enter item name"
+                          value={formState.itemName}
+                          onChange={(e) =>
+                            handleFormInputChange('itemName', e.target.value)
+                          }
                           className="mt-1 bg-gray-950 border-gray-700"
                         />
                       </div>
 
                       <div>
-                        <Label className="text-sm text-gray-400">
-                          Description
-                        </Label>
+                        <Label className="text-sm text-gray-400">Description</Label>
                         <Textarea
                           placeholder="Describe the item characteristics"
+                          value={formState.description}
+                          onChange={(e) =>
+                            handleFormInputChange('description', e.target.value)
+                          }
                           className="mt-1 bg-gray-950 border-gray-700 min-h-[100px]"
                         />
                       </div>
 
                       <div>
-                        <Label className="text-sm text-gray-400">
-                          Category
-                        </Label>
-                        <Select defaultValue="safety">
+                        <Label className="text-sm text-gray-400">Category</Label>
+                        <Select
+                          value={formState.category}
+                          onValueChange={(value: ItemCategory) =>
+                            handleFormInputChange('category', value)
+                          }
+                        >
                           <SelectTrigger className="mt-1 bg-gray-950 border-gray-700">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="safety">
+                            <SelectItem value={ItemCategory.SAFETY}>
                               Safety Equipment
                             </SelectItem>
-                            <SelectItem value="parts">Parts</SelectItem>
-                            <SelectItem value="defects">Defects</SelectItem>
+                            <SelectItem value={ItemCategory.PARTS}>Parts</SelectItem>
+                            <SelectItem value={ItemCategory.DEFECTS}>Defects</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
 
                       <div>
-                        <Label className="text-sm text-gray-400">
-                          Priority Level
-                        </Label>
-                        <Select defaultValue="high">
+                        <Label className="text-sm text-gray-400">Priority Level</Label>
+                        <Select
+                          value={formState.priority}
+                          onValueChange={(value: PriorityLevel) =>
+                            handleFormInputChange('priority', value)
+                          }
+                        >
                           <SelectTrigger className="mt-1 bg-gray-950 border-gray-700">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="high">High</SelectItem>
-                            <SelectItem value="medium">Medium</SelectItem>
-                            <SelectItem value="low">Low</SelectItem>
+                            <SelectItem value={PriorityLevel.HIGH}>High</SelectItem>
+                            <SelectItem value={PriorityLevel.MEDIUM}>Medium</SelectItem>
+                            <SelectItem value={PriorityLevel.LOW}>Low</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
@@ -561,10 +639,15 @@ export default function Training() {
                             type="range"
                             min="0"
                             max="100"
-                            defaultValue="85"
+                            value={formState.detectionThreshold}
+                            onChange={(e) =>
+                              handleFormInputChange('detectionThreshold', e.target.value)
+                            }
                             className="flex-1"
                           />
-                          <span className="text-sm font-medium">85%</span>
+                          <span className="text-sm font-medium">
+                            {formState.detectionThreshold}%
+                          </span>
                         </div>
                         <div className="flex justify-between text-xs text-gray-500 mt-1">
                           <span>0%</span>
@@ -580,6 +663,7 @@ export default function Training() {
                     variant="outline"
                     className="border-gray-700 text-gray-300 hover:bg-gray-800"
                     onClick={() => setCurrentStep('annotate')}
+                    disabled={startTrainingMutation.isPending}
                   >
                     Back
                   </Button>
@@ -587,6 +671,7 @@ export default function Training() {
                     <Button
                       variant="outline"
                       className="border-gray-700 text-gray-300 hover:bg-gray-800"
+                      disabled={startTrainingMutation.isPending}
                     >
                       <X className="w-4 h-4 mr-2" />
                       Cancel
@@ -594,11 +679,20 @@ export default function Training() {
                     <Button
                       variant="outline"
                       className="border-gray-700 text-gray-300 hover:bg-gray-800"
+                      disabled={startTrainingMutation.isPending}
                     >
                       Save Draft
                     </Button>
-                    <Button className="bg-blue-600 hover:bg-blue-700">
-                      <Play className="w-4 h-4 mr-2" />
+                    <Button
+                      className="bg-blue-600 hover:bg-blue-700"
+                      onClick={handleSubmitTraining}
+                      disabled={startTrainingMutation.isPending}
+                    >
+                      {startTrainingMutation.isPending ? (
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      ) : (
+                        <Play className="w-4 h-4 mr-2" />
+                      )}
                       Start Training
                     </Button>
                   </div>

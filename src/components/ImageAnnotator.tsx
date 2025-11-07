@@ -48,9 +48,9 @@ export default function ImageAnnotator({
     isLoading: isLoadingAnnotations,
     error,
   } = useQuery<Annotation[]>({
-    queryKey: ['annotations', imageId], // Chave única por imagem
+    queryKey: ['annotations', imageId],
     queryFn: () => getAnnotations(imageId),
-    refetchOnWindowFocus: false, // Evita re-buscar desnecessariamente
+    refetchOnWindowFocus: false,
   });
 
   // 2. Mutação para SALVAR as anotações
@@ -58,8 +58,6 @@ export default function ImageAnnotator({
     mutationFn: (annotationsToSave: Omit<Annotation, 'id'>[]) =>
       saveAnnotations({ imageId, annotations: annotationsToSave }),
     onSuccess: (savedAnnotations) => {
-      // Quando salvar, atualiza o cache do react-query com os dados do servidor
-      // Isso atualiza os IDs temporários (timestamps) pelos IDs reais (uuid)
       queryClient.setQueryData(['annotations', imageId], savedAnnotations);
     },
     onError: (err) => {
@@ -74,30 +72,36 @@ export default function ImageAnnotator({
   // Efeito para carregar a imagem no canvas
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !imageUrl) return;
+    if (!canvas || !imageUrl){
+      // --- LOG 9 ---
+      console.warn('>>> 9. ImageAnnotator: Effect pulado (sem canvas ou imageUrl)', { canvas, imageUrl });
+      // -----------
+      return;
+    } 
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     
     // Pega o objeto Image do ref
     const img = imageRef.current;
-    img.crossOrigin = 'anonymous'; // Permite carregar imagens de outra porta (localhost:3001)
+    img.crossOrigin = 'anonymous'; 
 
     // Define os handlers ANTES de definir o .src
     img.onload = () => {
-      canvas.width = img.width;
-      canvas.height = img.height;
-      setImageLoaded(true); // Dispara o redraw
+      if (canvasRef.current) {
+        canvasRef.current.width = img.width;
+        canvasRef.current.height = img.height;
+        setImageLoaded(true);
+      }
     };
     img.onerror = () => {
       console.error('Erro ao carregar a imagem:', imageUrl);
       setImageLoaded(false);
     };
 
-    // Define o .src para iniciar o carregamento
     img.src = imageUrl;
     
-  }, [imageUrl]); // Este efeito só re-executa se a imageUrl mudar
+  }, [imageUrl, isLoadingAnnotations]);
 
   // Efeito para popular o estado interno quando a API retornar os dados
   useEffect(() => {
@@ -111,19 +115,18 @@ export default function ImageAnnotator({
     if (imageLoaded) {
       redrawCanvas();
     }
-  }, [annotations, currentBox, imageLoaded]); // Redesenha se a imagem carregar OU anotações mudarem
-
+  }, [annotations, currentBox, imageLoaded]);
   // --- LÓGICA DE DESENHO ---
 
   const redrawCanvas = () => {
     const canvas = canvasRef.current;
-    const img = imageRef.current; // Pega a imagem do ref
+    const img = imageRef.current;
     if (!canvas || !img) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-    ctx.drawImage(img, 0, 0); // Usa a imagem do ref
+    ctx.drawImage(img, 0, 0);
 
     // Desenha anotações salvas
     annotations.forEach((box) => {
@@ -209,14 +212,16 @@ export default function ImageAnnotator({
     setCurrentBox(null);
   };
 
-  const updateLabel = (id: string, label: string) => {
+  const handleLabelChange = (id: string, label: string) => {
     const newAnnotations = annotations.map((box) =>
       box.id === id ? { ...box, label } : box,
     );
     setAnnotations(newAnnotations);
-    
+  };
+
+  const handleSaveAnnotations = () => {
     // Mapeia o array para remover o campo 'id' antes de enviar
-    const annotationsToSave = newAnnotations.map(({ id, ...rest }) => rest);
+    const annotationsToSave = annotations.map(({ id, ...rest }) => rest);
     saveMutation.mutate(annotationsToSave); // Salva na API
   };
 
@@ -299,7 +304,7 @@ export default function ImageAnnotator({
             ) : (
               annotations.map((box, index) => (
                 <div
-                  key={box.id} // Agora usa o ID do DB ou o ID temporário
+                  key={box.id}
                   className="p-3 bg-gray-800 rounded-lg border border-gray-700"
                 >
                   <div className="flex items-center justify-between mb-2">
@@ -321,7 +326,8 @@ export default function ImageAnnotator({
                       <Label className="text-xs text-gray-400">Label</Label>
                       <Input
                         value={box.label}
-                        onChange={(e) => updateLabel(box.id, e.target.value)}
+                        onChange={(e) => handleLabelChange(box.id, e.target.value)}
+                        onBlur={handleSaveAnnotations}
                         placeholder="Enter object label"
                         className="mt-1 bg-gray-950 border-gray-700 text-white"
                       />
