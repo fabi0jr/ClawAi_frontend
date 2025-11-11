@@ -1,61 +1,73 @@
-import { Link, useLocation } from 'react-router-dom';
-import { Button } from '@/components/ui/button';
-import { LayoutDashboard, Video, BarChart3, GraduationCap, Settings } from 'lucide-react';
+import { NavLink } from 'react-router-dom';
+import { Camera, BrainCircuit, Bot, Settings, Volume2, VolumeX } from 'lucide-react';
+import { useAccessibility } from '@/context/AccessibilityContext';
 
 export default function Navbar() {
-  const location = useLocation();
+  const { isEnabled, toggleAccessibility, speakText } = useAccessibility();
 
-  const navItems = [
-    { path: '/', label: 'Dashboard', icon: LayoutDashboard },
-    { path: '/live-monitor', label: 'Live Monitor', icon: Video },
-    { path: '/detection-insights', label: 'Detection Insights', icon: BarChart3 },
-    { path: '/training', label: 'Training', icon: GraduationCap },
-    { path: '/settings', label: 'Settings', icon: Settings }
-  ];
+  const handleToggle = () => {
+    toggleAccessibility();
+    speakText(isEnabled ? 'Modo de acessibilidade desativado' : 'Modo de acessibilidade ativado');
+  };
+
+  const navLinkClass = ({ isActive }: { isActive: boolean }) =>
+    `flex flex-col items-center p-3 rounded-lg transition-colors ${
+      isActive
+        ? 'bg-blue-600 text-white'
+        : 'text-gray-400 hover:bg-gray-800 hover:text-white'
+    }`;
 
   return (
-    <nav className="border-b border-gray-800 bg-[#0a0b14]">
-      <div className="container mx-auto px-6 py-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-8">
-            <Link to="/" className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
-                <span className="text-white font-bold text-sm">CA</span>
-              </div>
-              <span className="text-xl font-bold text-white">Claw AI</span>
-            </Link>
+    <nav className="fixed left-0 top-0 h-full w-20 bg-gray-900 border-r border-gray-800 flex flex-col items-center py-6 z-50">
+      <div className="mb-6">
+        <Bot className="w-8 h-8 text-blue-400" />
+      </div>
 
-            <div className="flex items-center gap-2">
-              {navItems.map((item) => {
-                const Icon = item.icon;
-                const isActive = location.pathname === item.path;
-                
-                return (
-                  <Link key={item.path} to={item.path}>
-                    <Button
-                      variant={isActive ? 'default' : 'ghost'}
-                      className={`gap-2 ${
-                        isActive
-                          ? 'bg-blue-600 text-white hover:bg-blue-700'
-                          : 'text-gray-400 hover:text-white hover:bg-gray-800'
-                      }`}
-                    >
-                      <Icon className="w-4 h-4" />
-                      {item.label}
-                    </Button>
-                  </Link>
-                );
-              })}
-            </div>
-          </div>
+      <div className="flex flex-col space-y-4 flex-1">
+        <NavLink
+          to="/live-monitor"
+          className={navLinkClass}
+          onMouseEnter={() => speakText('Monitoramento ao Vivo')}
+        >
+          <Camera className="w-6 h-6" />
+          <span className="text-xs mt-1">Monitor</span>
+        </NavLink>
+        <NavLink
+          to="/training"
+          className={navLinkClass}
+          onMouseEnter={() => speakText('Treinamento de IA')}
+        >
+          <BrainCircuit className="w-6 h-6" />
+          <span className="text-xs mt-1">Treino</span>
+        </NavLink>
+      </div>
 
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-green-500/10 rounded-full">
-              <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-              <span className="text-green-500 text-sm font-medium">Live</span>
-            </div>
-          </div>
-        </div>
+      <div className="flex flex-col space-y-4">
+        <button
+          onClick={handleToggle}
+          onMouseEnter={() => speakText('Alternar modo de acessibilidade')}
+          className={`flex flex-col items-center p-3 rounded-lg transition-colors ${
+            isEnabled
+              ? 'text-blue-400'
+              : 'text-gray-400 hover:bg-gray-800 hover:text-white'
+          }`}
+        >
+          {isEnabled ? (
+            <Volume2 className="w-6 h-6" />
+          ) : (
+            <VolumeX className="w-6 h-6" />
+          )}
+          <span className="text-xs mt-1">Voz</span>
+        </button>
+        
+        <NavLink
+          to="/settings" // (Rota ainda não existe, mas ok)
+          className={navLinkClass}
+          onMouseEnter={() => speakText('Configurações')}
+        >
+          <Settings className="w-6 h-6" />
+          <span className="text-xs mt-1">Ajustes</span>
+        </NavLink>
       </div>
     </nav>
   );

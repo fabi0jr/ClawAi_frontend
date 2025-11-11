@@ -32,6 +32,8 @@ export interface TrainingSession {
   status: 'processing' | 'complete' | 'failed';
   createdAt: string;
   updatedAt: string;
+  images?: TrainingImage[];
+
   }
 
 
