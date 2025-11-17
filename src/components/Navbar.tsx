@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import { Camera, BrainCircuit, Bot, Settings, Volume2, VolumeX } from 'lucide-react';
 import { useAccessibility } from '@/context/AccessibilityContext';
+import ClawAILogoSquare from '@/assets/logos/clawai-logo-square.png';
 
 export default function Navbar() {
   const { isEnabled, toggleAccessibility, speakText } = useAccessibility();
@@ -18,9 +19,9 @@ export default function Navbar() {
     }`;
 
   return (
-    <nav className="fixed left-0 top-0 h-full w-20 bg-gray-900 border-r border-gray-800 flex flex-col items-center py-6 z-50">
-      <div className="mb-6">
-        <Bot className="w-8 h-8 text-blue-400" />
+    <nav className="fixed left-0 top-0 h-full w-25 bg-gray-900 border-r border-gray-800 flex flex-col items-center py-6 z-50">
+      <div className="mb-6" >
+        <img src={ClawAILogoSquare} alt="Claw AI Logo" className="w-24 h-25 rounded-lg"/>
       </div>
 
       <div className="flex flex-col space-y-4 flex-1">

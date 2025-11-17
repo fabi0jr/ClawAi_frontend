@@ -1,5 +1,4 @@
-// src/pages/LiveMonitor.tsx
-
+import React, { useEffect, useState } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Pause, Download, Maximize } from 'lucide-react';
@@ -7,6 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api';
 import { type Detection, type DashboardStats } from '@/types/api';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useAccessibility } from '@/context/AccessibilityContext';
 
 // --- FUNÇÕES DE API ---
 const fetchDetections = async (): Promise<Detection[]> => {
@@ -19,7 +19,21 @@ const fetchStats = async (): Promise<DashboardStats & { cameraDetails: string }>
   return data;
 };
 
+const VideoStream = ({ url }: { url: string }) => {
+  return (
+    <img
+      src={url}
+      alt="Conveyor belt monitoring"
+      className="w-full h-full object-cover"
+    />
+  );
+};
+
+const MemoizedVideoStream = React.memo(VideoStream);
+
 export default function LiveMonitor() {
+  const { isEnabled, speakText } = useAccessibility();
+  const [lastSpokenId, setLastSpokenId] = useState<string | null>(null);
   // --- QUERY PARA DETECÇÕES ---
   const {
     data: detections,
@@ -41,6 +55,20 @@ export default function LiveMonitor() {
     queryFn: fetchStats,
     refetchInterval: 2000,
   });
+
+  useEffect(() => {
+    if (isEnabled && detections && detections.length > 0) {
+      const latestDetection = detections[0];
+
+      if (latestDetection.id !== lastSpokenId) {
+        const message = `Item detectado: ${latestDetection.type}. ${latestDetection.status}. Confiança de ${latestDetection.confidence}%.`;
+        
+        speakText(message);
+        
+        setLastSpokenId(latestDetection.id);
+      }
+    }
+  }, [detections, isEnabled, speakText, lastSpokenId]);
 
   // --- FUNÇÃO PARA RENDERIZAR A TABELA ---
   const renderDetectionRows = () => {
@@ -119,17 +147,7 @@ export default function LiveMonitor() {
               </div>
 
               <div className="relative aspect-video bg-gray-950">
-                {/* A MUDANÇA PRINCIPAL ESTÁ AQUI.
-                  Voltamos para a tag <img> apontando para o seu serviço de IA.
-                  (Note que usamos a porta 5002, do 'inference_service', 
-                  que é quem gera o vídeo com as anotações).
-                */}
-                <img
-                  src="http://localhost:5002/video_feed_annotated"
-                  alt="Conveyor belt monitoring"
-                  className="w-full h-full object-cover"
-                />
-
+                <MemoizedVideoStream url="http://localhost:5002/video_feed_annotated" />
                 {/* O overlay de status (agora dinâmico) */}
                 <div className="absolute bottom-4 left-4 bg-black/70 px-3 py-1.5 rounded text-sm flex items-center gap-2">
                   {isLoadingStats ? (
